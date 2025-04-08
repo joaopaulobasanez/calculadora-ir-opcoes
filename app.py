@@ -1,16 +1,11 @@
-
 import streamlit as st
 import pandas as pd
 import fitz  # PyMuPDF
-import base64
 from io import BytesIO
-import tempfile
-import os
+import re
 
-st.set_page_config(page_title="Calculadora de IR para Opções", layout="wide")
-
-st.title("📈 Calculadora de IR para Opções (Notas Sinacor)")
-st.write("Faça upload de arquivos PDF com notas de corretagem no formato Sinacor para calcular lucro/prejuízo mensal e o imposto devido.")
+st.set_page_config(page_title="Calculadora IR Opções - Clear", layout="wide")
+st.title("📈 Calculadora IR sobre Opções (Notas da Clear)")
 
 def extrair_texto_pdf(arquivo):
     texto_total = ""
@@ -19,88 +14,51 @@ def extrair_texto_pdf(arquivo):
             texto_total += pagina.get_text()
     return texto_total
 
-def parse_nota_sinacor(texto):
+def parse_nota_clear(texto):
     linhas = texto.split("\n")
     operacoes = []
-    data_nota = None
+    data_pregao = None
+
     for i, linha in enumerate(linhas):
-        if "Data pregão" in linha:
+        if "Data pregão" in linha and i + 1 < len(linhas):
             try:
-                data_nota = pd.to_datetime(linha.split()[-1], dayfirst=True)
+                data_pregao = pd.to_datetime(linhas[i + 1].strip(), dayfirst=True)
             except:
-                data_nota = None
-        if "OPÇÕES DE COMPRA" in linha or "OPÇÕES DE VENDA" in linha:
-            j = i + 2
-            while j < len(linhas) and linhas[j].strip():
-                partes = linhas[j].split()
-                if len(partes) >= 6:
-                    ativo = partes[0]
-                    tipo = "C" if "C" in partes else "V"
-                    quantidade = int(partes[1])
-                    preco = float(partes[-2].replace(",", "."))
-                    valor = float(partes[-1].replace(",", "."))
-                    operacoes.append({
-                        "data": data_nota,
-                        "ativo": ativo,
-                        "tipo": tipo,
-                        "quantidade": quantidade,
-                        "preco": preco,
-                        "valor": valor
-                    })
-                j += 1
+                pass
+
+        if "B3 RV LISTADO" in linha and ("OPCAO DE" in linha or "OPÇÃO DE" in linha):
+            partes = linha.split()
+            try:
+                tipo_op = "venda" if "V" in partes else "compra"
+                ativo = partes[7] if len(partes) > 7 else "N/A"
+                quantidade = int(partes[-4])
+                preco = float(partes[-3].replace(",", "."))
+                valor_total = float(partes[-2].replace(",", "."))
+                operacoes.append({
+                    "data": data_pregao,
+                    "ativo": ativo,
+                    "tipo": tipo_op,
+                    "quantidade": quantidade,
+                    "preco": preco,
+                    "valor_total": valor_total
+                })
+            except:
+                continue
     return pd.DataFrame(operacoes)
 
-def classificar_tipo_operacao(df):
-    if 'data' not in df.columns:
-        st.error("Erro: a coluna 'data' não foi encontrada nos dados extraídos.")
-        st.stop()
-    df['data_str'] = df['data'].dt.strftime('%Y-%m-%d')
-    df['tipo_operacao'] = "Swing Trade"
-    for ativo in df['ativo'].unique():
-        datas = df[df['ativo'] == ativo]['data'].sort_values().values
-        if len(datas) > 1 and (datas[-1] == datas[-2]):
-            df.loc[df['ativo'] == ativo, 'tipo_operacao'] = "Day Trade"
-    return df
+# App principal
+uploaded_files = st.file_uploader("📎 Envie suas notas da Clear (PDF)", type=["pdf"], accept_multiple_files=True)
+if uploaded_files:
+    todas_ops = pd.DataFrame()
+    for arq in uploaded_files:
+        texto = extrair_texto_pdf(arq)
+        df = parse_nota_clear(texto)
+        todas_ops = pd.concat([todas_ops, df], ignore_index=True)
 
-def calcular_lucros(df):
-    df = classificar_tipo_operacao(df)
-    df['ano_mes'] = df['data'].dt.to_period('M')
-    resultado = df.groupby(['ano_mes', 'tipo_operacao']).agg({'valor': 'sum'}).reset_index()
-    resultado['lucro'] = resultado['valor']
-    resultado.drop(columns='valor', inplace=True)
-    return resultado
-
-def gerar_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name="IR Resultado")
-    return output.getvalue()
-
-arquivos = st.file_uploader("📎 Envie suas notas de corretagem (PDF)", type=["pdf"], accept_multiple_files=True)
-
-if arquivos:
-    todas_operacoes = pd.DataFrame()
-    for arquivo in arquivos:
-        texto = extrair_texto_pdf(arquivo)
-        df = parse_nota_sinacor(texto)
-        todas_operacoes = pd.concat([todas_operacoes, df], ignore_index=True)
-
-    if not todas_operacoes.empty:
-        st.write("📊 Pré-visualização das operações extraídas:")
-        st.dataframe(todas_operacoes)
-
-        df_resultado = calcular_lucros(todas_operacoes)
-
-        st.subheader("📅 Resultado mensal com IR:")
-        st.dataframe(df_resultado)
-
-        excel_bytes = gerar_excel(df_resultado)
-
-        st.download_button(
-            label="📥 Baixar Relatório Excel",
-            data=excel_bytes,
-            file_name="relatorio_ir_opcoes.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    if not todas_ops.empty:
+        st.success("✅ Operações detectadas:")
+        st.dataframe(todas_ops)
     else:
-        st.warning("Nenhuma operação foi detectada nos PDFs enviados.")
+        st.warning("⚠️ Nenhuma operação foi detectada.")
+else:
+    st.info("Envie ao menos um PDF para começar.")
