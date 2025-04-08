@@ -4,4 +4,7 @@ pandas
 openpyxl
 fpdf
 PyMuPDF
+PyMuPDF==1.22.3
+
+
 
